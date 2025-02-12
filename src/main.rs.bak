@@ -1,0 +1,115 @@
+use bevy::asset::AssetMetaCheck;
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
+use bevy::{prelude::*, render::camera::ScalingMode};
+
+const PLAYER_WIDTH: f32 = 1.0;
+const PLAYER_HEIGHT: f32 = 1.0;
+
+#[derive(Component)]
+struct Player;
+
+/// Position of the central point of the rectangle
+#[derive(Component)]
+struct Position {
+    x: f32,
+    y: f32,
+}
+
+/// Dimensions of the rectangle
+#[derive(Component)]
+struct Dimensions {
+    width: f32,
+    height: f32,
+}
+
+fn main() {
+    App::new()
+        .add_plugins((
+            DefaultPlugins
+                .set(AssetPlugin {
+                    // Wasm builds will check for meta files (that don't exist) if this isn't set.
+                    // This causes errors and even panics in web builds on itch.
+                    // See https://github.com/bevyengine/bevy_github_ci_template/issues/48.
+                    meta_check: AssetMetaCheck::Never,
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        fit_canvas_to_parent: true,
+                        prevent_default_event_handling: false,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+            // PhysicsPlugins::default(),
+        ))
+        .insert_resource(ClearColor(Color::srgb(0.53, 0.53, 0.53)))
+        .add_systems(Startup, (setup_camera, setup_arena, spawn_player))
+        .add_systems(Update, move_player)
+        .run();
+}
+
+fn move_player(
+    mut players: Query<&mut Transform, With<Player>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
+) {
+    let mut direction = Vec2::ZERO;
+    if keys.any_pressed([KeyCode::ArrowUp, KeyCode::KeyW]) {
+        direction.y += 1.;
+    }
+    if keys.any_pressed([KeyCode::ArrowDown, KeyCode::KeyS]) {
+        direction.y -= 1.;
+    }
+    if keys.any_pressed([KeyCode::ArrowRight, KeyCode::KeyD]) {
+        direction.x += 1.;
+    }
+    if keys.any_pressed([KeyCode::ArrowLeft, KeyCode::KeyA]) {
+        direction.x -= 1.;
+    }
+    if direction == Vec2::ZERO {
+        return;
+    }
+
+    let move_speed = 7.;
+    let move_delta = direction * move_speed * time.delta_secs();
+
+    for mut transform in &mut players {
+        transform.translation += move_delta.extend(0.);
+    }
+}
+
+fn spawn_player(mut commands: Commands) {
+    commands.spawn((
+        Player,
+        Sprite {
+            color: Color::srgb(0., 0.47, 1.),
+            custom_size: Some(Vec2::new(PLAYER_WIDTH, PLAYER_HEIGHT)),
+            ..default()
+        },
+    ));
+}
+
+fn setup_camera(mut commands: Commands) {
+    commands.spawn((
+        Camera2d,
+        OrthographicProjection {
+            scaling_mode: ScalingMode::FixedVertical {
+                viewport_height: 10.,
+            },
+            ..OrthographicProjection::default_2d()
+        },
+    ));
+    // commands.spawn(Sprite {
+    //     image: asset_server.load("ducky.png"),
+    //     ..Default::default()
+    // });
+}
+
+fn setup_arena(mut commands: Commands) {
+    commands.spawn((Sprite {
+        color: Color::srgb(0., 0., 1.),
+        custom_size: Some(Vec2::new(2.0, 5.0)),
+        ..default()
+    },));
+}
