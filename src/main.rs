@@ -24,13 +24,15 @@ fn main() {
             // PhysicsPlugins::default(),
         ))
         .insert_resource(ClearColor(Color::srgb(0.3, 0.3, 0.3)))
+        .add_event::<CollisionEvent>()
         .add_systems(Startup, (setup, spawn_floor, spawn_player))
         .add_systems(Update, move_player)
         .add_systems(Update, move_camera)
+        .add_systems(Update, play_collision_sound)
         .add_systems(FixedUpdate, gravity)
         .add_systems(FixedUpdate, speed)
         .add_systems(FixedUpdate, damp)
-        .add_systems(FixedUpdate, collider)
+        .add_systems(FixedUpdate, check_for_collisions)
         .add_systems(FixedUpdate, acceleration)
         .add_systems(FixedUpdate, gravitational_pull)
         .run();
@@ -49,6 +51,9 @@ struct Acceleration(Vec2);
 struct Mass(f32);
 
 #[derive(Component)]
+struct Dimensions(Vec2);
+
+#[derive(Component)]
 struct Collider;
 
 #[derive(Component)]
@@ -59,6 +64,12 @@ struct Static;
 
 #[derive(Component)]
 struct Bouncy(f32);
+
+#[derive(Event, Default)]
+struct CollisionEvent;
+
+#[derive(Resource)]
+struct CollisionSound(Handle<AudioSource>);
 
 const GRAVITY: f32 = -10.0;
 fn gravity(mut query: Query<&mut Speed, (With<Gravity>, Without<Static>)>, time: Res<Time>) {
@@ -78,20 +89,19 @@ fn gravitational_pull(
     while let Some([(acc1_opt, Mass(m1), transform1), (acc2_opt, Mass(m2), transform2)]) =
         iter.fetch_next()
     {
-        let delta = transform2.translation - transform1.translation;
+        let delta = transform1.translation - transform2.translation;
         let distance_sq: f32 = delta.length_squared();
-        println!("delta: {}", distance_sq);
-        if (distance_sq > 1000000.0) {
+        if distance_sq > 1000000.0 {
             continue;
         }
 
         let f = GRAVITATIONAL_CONSTANT / distance_sq;
         let force_unit_mass = delta * f;
         if let Some(mut acc1) = acc1_opt {
-            acc1.0 += force_unit_mass.xy() * (m2) * time_delta;
+            acc1.0 -= force_unit_mass.xy() * (m2) * time_delta;
         }
         if let Some(mut acc2) = acc2_opt {
-            acc2.0 -= force_unit_mass.xy() * (m1) * time_delta;
+            acc2.0 += force_unit_mass.xy() * (m1) * time_delta;
         }
     }
 }
@@ -118,11 +128,81 @@ fn damp(mut query: Query<&mut Speed>, time: Res<Time>) {
     }
 }
 
-fn collider(mut query: Query<(&mut Speed, &Transform, &Mesh2d), With<Collider>>) {
+fn compute_aabb(transform: &Transform, size: &Vec2) -> (Vec2, Vec2) {
+    let half_size = size / 2.0;
+    let angle = transform.rotation.to_euler(EulerRot::XYZ).2; // Extract the Z-axis rotation
+    let cos_theta = angle.cos();
+    let sin_theta = angle.sin();
+
+    // Define rectangle corners relative to center (before rotation)
+    let corners = [
+        Vec2::new(-half_size.x, -half_size.y),
+        Vec2::new(half_size.x, -half_size.y),
+        Vec2::new(half_size.x, half_size.y),
+        Vec2::new(-half_size.x, half_size.y),
+    ];
+
+    // Apply rotation and translation
+    let rotated_corners: Vec<Vec2> = corners
+        .iter()
+        .map(|corner| {
+            let rotated_x = corner.x * cos_theta - corner.y * sin_theta;
+            let rotated_y = corner.x * sin_theta + corner.y * cos_theta;
+            transform.translation.truncate() + Vec2::new(rotated_x, rotated_y)
+        })
+        .collect();
+
+    // Compute min/max x and y
+    let min_x = rotated_corners
+        .iter()
+        .map(|v| v.x)
+        .fold(f32::INFINITY, f32::min);
+    let max_x = rotated_corners
+        .iter()
+        .map(|v| v.x)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = rotated_corners
+        .iter()
+        .map(|v| v.y)
+        .fold(f32::INFINITY, f32::min);
+    let max_y = rotated_corners
+        .iter()
+        .map(|v| v.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+
+    (Vec2::new(min_x, min_y), Vec2::new(max_x, max_y))
+}
+
+fn check_for_collisions(
+    mut query: Query<(Option<&mut Acceleration>, &Mass, &Transform, &Dimensions), With<Collider>>,
+    mut collision_events: EventWriter<CollisionEvent>,
+) {
     let mut iter = query.iter_combinations_mut();
-    while let Some([(mut speed_a, transform_a, mesh_a), (mut speed_b, transform_b, mesh_b)]) =
-        iter.fetch_next()
-    {}
+    while let Some(
+        [(mut acc_a, Mass(m_a), transform_a, dim_a), (mut acc_b, Mass(m_b), transform_b, dim_b)],
+    ) = iter.fetch_next()
+    {
+        let (min_a, max_a) = compute_aabb(transform_a, &dim_a.0);
+        let (min_b, max_b) = compute_aabb(transform_b, &dim_b.0);
+        if max_a.x < min_b.x || max_a.y < min_b.y || max_b.x < min_a.x || max_b.y < min_a.y {
+            continue;
+        }
+        println!("collision detected!");
+        collision_events.send_default();
+    }
+}
+
+fn play_collision_sound(
+    mut commands: Commands,
+    mut collision_events: EventReader<CollisionEvent>,
+    sound: Res<CollisionSound>,
+) {
+    // Play a sound once per frame if a collision occurred.
+    if !collision_events.is_empty() {
+        // This prevents events staying active on the next frame.
+        collision_events.clear();
+        commands.spawn((AudioPlayer(sound.0.clone()), PlaybackSettings::DESPAWN));
+    }
 }
 
 fn move_camera(
@@ -178,10 +258,13 @@ fn move_player(
     speed.0 += move_delta;
 }
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn((Name::new("Camera"), Camera2d));
+    let ball_collision_sound = asset_server.load("sounds/hitHurt.ogg");
+    commands.insert_resource(CollisionSound(ball_collision_sound));
 }
 
+const FLOOR_RECT: Dimensions = Dimensions(Vec2::new(1000.0, 100.0));
 fn spawn_floor(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -189,18 +272,17 @@ fn spawn_floor(
 ) {
     commands.spawn((
         Name::new("Floor"),
-        // Static,
+        Static,
         Collider,
         Mass(1.0),
-        Mesh2d(meshes.add(Rectangle::new(1000.0, 100.0))),
+        FLOOR_RECT,
+        Mesh2d(meshes.add(Rectangle::new(FLOOR_RECT.0.x, FLOOR_RECT.0.y))),
         MeshMaterial2d(materials.add(Color::WHITE)),
         Transform::from_xyz(0.0, -300.0, 0.0),
-        Acceleration(Vec2::ZERO),
-        Speed(Vec2::ZERO),
-        Gravity,
     ));
 }
 
+const PLAYER_RECT: Dimensions = Dimensions(Vec2::new(100.0, 100.0));
 fn spawn_player(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -215,7 +297,8 @@ fn spawn_player(
         Acceleration(Vec2::ZERO),
         Speed(Vec2::ZERO),
         Mass(1.0),
-        Mesh2d(meshes.add(Rectangle::new(100.0, 100.0))),
+        PLAYER_RECT,
+        Mesh2d(meshes.add(Rectangle::new(PLAYER_RECT.0.x, PLAYER_RECT.0.y))),
         MeshMaterial2d(materials.add(Color::BLACK)),
         Transform::from_xyz(-300.0, 0.0, 0.0),
     ));
