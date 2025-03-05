@@ -68,6 +68,19 @@ impl Default for Player {
 #[derive(Resource)]
 struct CollisionSound(Handle<AudioSource>);
 
+fn handle_player_collision(player: &mut Player, contact_normal: Vec2) {
+    let dot = contact_normal.dot(Vec2::NEG_Y);
+    if dot.abs() < 0.1 {
+        // wall
+        println!("wall collision");
+    } else if dot.abs() > 0.9 {
+        // ground
+        println!("ground collision");
+        player.reset_jump();
+        player.can_jump = true;
+    }
+}
+
 fn handle_collision(
     mut commands: Commands,
     collisions: Res<Collisions>,
@@ -87,16 +100,7 @@ fn handle_collision(
             } else {
                 contact_data.normal2
             };
-            let dot = player_contact_normal.dot(Vec2::NEG_Y);
-            if dot.abs() < 0.1 {
-                // wall
-                println!("wall collision");
-            } else if dot.abs() > 0.9 {
-                // ground
-                println!("ground collision");
-                player.reset_jump();
-                player.can_jump = true;
-            }
+            handle_player_collision(&mut *player, player_contact_normal);
         }
     }
 }
@@ -109,7 +113,6 @@ fn move_player(
     let (mut linear, mut player) = query.into_inner();
     let delta_secs = time.delta_secs();
     let mut direction = Vec2::ZERO;
-    let mut rotation = 0.0;
     {
         if keyboard_input.any_pressed([KeyCode::ArrowUp, KeyCode::KeyW]) {
             if player.can_jump {
@@ -147,7 +150,6 @@ fn move_player(
 }
 
 fn player_fast_falling(
-    keyboard_input: Res<ButtonInput<KeyCode>>,
     query: Single<(&mut Transform, &LinearVelocity, &mut Player)>,
     time: Res<Time>,
 ) {
@@ -200,12 +202,12 @@ fn spawn_wall(
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     commands.spawn((
-        Name::new("Wall"),
+        Name::new("RightWall"),
         RigidBody::Static,
         Collider::rectangle(100.0, 1000.0),
         Mesh2d(meshes.add(Rectangle::new(100.0, 1000.0))),
         MeshMaterial2d(materials.add(Color::WHITE)),
-        Transform::from_xyz(0.0, -300.0, 0.0),
+        Transform::from_xyz(100.0, -300.0, 0.0),
     ));
 }
 
