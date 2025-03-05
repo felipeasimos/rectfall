@@ -4,6 +4,10 @@ use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 
 const GRAVITY: f32 = 1000.0;
+const MAX_HORIZONTAL_CONTROL: f32 = 300.0;
+const HORIZONTAL_CHANGE: f32 = 10.0;
+const JUMP_BOOST: f32 = 100.0;
+
 fn main() {
     App::new()
         .add_plugins((
@@ -29,9 +33,9 @@ fn main() {
         .insert_resource(Gravity(Vec2::NEG_Y * GRAVITY))
         .insert_resource(ClearColor(Color::srgb(0.3, 0.3, 0.3)))
         .add_systems(Startup, (setup, spawn_floor, spawn_player))
-        .add_systems(Update, move_player)
         .add_systems(Update, move_camera)
         .add_systems(Update, handle_collision)
+        .add_systems(FixedPreUpdate, move_player)
         .add_systems(FixedPostUpdate, player_fast_falling)
         .run();
 }
@@ -39,14 +43,24 @@ fn main() {
 #[derive(Component)]
 struct Player {
     can_jump: bool,
-    is_in_air: bool,
+    started_jump_press_duration: f32,
+    finished_jump_press: bool,
+}
+
+impl Player {
+    fn reset_jump(&mut self) {
+        *self = Player {
+            ..Default::default()
+        };
+    }
 }
 
 impl Default for Player {
     fn default() -> Player {
         Player {
             can_jump: false,
-            is_in_air: false,
+            started_jump_press_duration: 0.0,
+            finished_jump_press: false,
         }
     }
 }
@@ -54,28 +68,90 @@ impl Default for Player {
 #[derive(Resource)]
 struct CollisionSound(Handle<AudioSource>);
 
+fn handle_player_collision(player: &mut Player, contact_manifold: &ContactManifold) {}
+
 fn handle_collision(
     mut commands: Commands,
-    mut collision_event_reader: EventReader<CollisionStarted>,
+    mut collisions: EventReader<Collision>,
+    mut collisions_started: EventReader<CollisionStarted>,
     mut query: Query<&mut Player>,
     sound: Res<CollisionSound>,
 ) {
-    if collision_event_reader.is_empty() {
+    if !collisions.is_empty() && !collisions_started.is_empty() {
         return;
     }
-    for CollisionStarted(entity1, entity2) in collision_event_reader.read() {
-        if query.contains(*entity1) {
+    // commands.spawn((AudioPlayer(sound.0.clone()), PlaybackSettings::DESPAWN));
+    for Collision(contacts) in collisions.read() {
+        if query.contains(contacts.entity1) {
+            query.single_mut().reset_jump();
             query.single_mut().can_jump = true;
-            query.single_mut().is_in_air = false;
         }
-        if query.contains(*entity2) {
+        if query.contains(contacts.entity2) {
+            query.single_mut().reset_jump();
             query.single_mut().can_jump = true;
-            query.single_mut().is_in_air = false;
+        }
+        if query.contains(contacts.entity1) {
+            let mut player = query.single_mut().into_inner();
         }
     }
+    for CollisionStarted(entity1, entity2) in collisions_started.read() {}
+}
 
-    commands.spawn((AudioPlayer(sound.0.clone()), PlaybackSettings::DESPAWN));
-    collision_event_reader.clear();
+fn move_player(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    query: Single<(&mut LinearVelocity, &mut Player)>,
+    time: Res<Time>,
+) {
+    let (mut linear, mut player) = query.into_inner();
+    let delta_secs = time.delta_secs();
+    let mut direction = Vec2::ZERO;
+    let mut rotation = 0.0;
+    {
+        if keyboard_input.any_pressed([KeyCode::ArrowUp, KeyCode::KeyW]) {
+            if player.can_jump {
+                player.can_jump = false;
+                player.started_jump_press_duration = delta_secs;
+                if linear.y < MAX_HORIZONTAL_CONTROL {
+                    direction.y = JUMP_BOOST;
+                }
+            } else if !player.finished_jump_press && player.started_jump_press_duration > 0.5 {
+                player.finished_jump_press = true;
+            } else if player.started_jump_press_duration > 0.0 && !player.finished_jump_press {
+                player.started_jump_press_duration += delta_secs;
+                if linear.y < MAX_HORIZONTAL_CONTROL {
+                    direction.y = JUMP_BOOST;
+                }
+            }
+        } else if player.started_jump_press_duration > 0.0 {
+            player.finished_jump_press = true;
+        }
+        if keyboard_input.any_pressed([KeyCode::ArrowRight, KeyCode::KeyD]) {
+            if linear.x < MAX_HORIZONTAL_CONTROL {
+                direction.x += HORIZONTAL_CHANGE;
+            }
+        }
+        if keyboard_input.any_pressed([KeyCode::ArrowLeft, KeyCode::KeyA]) {
+            if -linear.x < MAX_HORIZONTAL_CONTROL {
+                direction.x -= HORIZONTAL_CHANGE;
+            }
+        }
+    }
+    let move_delta = 100.0 * direction * delta_secs;
+    if move_delta != Vec2::ZERO {
+        linear.0 += move_delta;
+    }
+}
+
+fn player_fast_falling(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    query: Single<(&mut Transform, &LinearVelocity, &mut Player)>,
+    time: Res<Time>,
+) {
+    let (mut transform, linear, player) = query.into_inner();
+    let delta = time.delta_secs();
+    if player.started_jump_press_duration > 0.0 && linear.y < 0.0 {
+        transform.translation.y -= (GRAVITY / 2.0) * delta * delta
+    }
 }
 
 fn move_camera(
@@ -91,54 +167,6 @@ fn move_camera(
     }
     let move_delta = Vec2::new(-mouse_motion.delta.x, mouse_motion.delta.y) * projection.scale;
     transform.translation += move_delta.extend(0.0);
-}
-
-const MAX_CONTROL: f32 = 300.0;
-const INPUT_CHANGE: f32 = 10.0;
-fn move_player(
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    query: Single<(&mut LinearVelocity, &mut Player)>,
-    time: Res<Time>,
-) {
-    let (mut linear, mut player) = query.into_inner();
-    let delta_secs = time.delta_secs();
-    let mut direction = Vec2::ZERO;
-    let mut rotation = 0.0;
-    {
-        if player.can_jump && keyboard_input.any_pressed([KeyCode::ArrowUp, KeyCode::KeyW]) {
-            if linear.y < MAX_CONTROL {
-                direction.y += INPUT_CHANGE * 50.0;
-            }
-            player.can_jump = false;
-            player.is_in_air = true;
-        }
-        if keyboard_input.any_pressed([KeyCode::ArrowRight, KeyCode::KeyD]) {
-            if linear.x < MAX_CONTROL {
-                direction.x += INPUT_CHANGE;
-            }
-        }
-        if keyboard_input.any_pressed([KeyCode::ArrowLeft, KeyCode::KeyA]) {
-            if -linear.x < MAX_CONTROL {
-                direction.x -= INPUT_CHANGE;
-            }
-        }
-    }
-    let move_delta = 100.0 * direction * time.delta_secs();
-    if move_delta != Vec2::ZERO {
-        linear.0 += move_delta;
-    }
-}
-
-fn player_fast_falling(
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    query: Single<(&mut Transform, &LinearVelocity, &mut Player)>,
-    time: Res<Time>,
-) {
-    let (mut transform, linear, player) = query.into_inner();
-    let delta = time.delta_secs();
-    if player.is_in_air && linear.y < 0.0 {
-        transform.translation.y -= (GRAVITY / 2.0) * delta * delta
-    }
 }
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
