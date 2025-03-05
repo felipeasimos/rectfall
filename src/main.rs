@@ -45,6 +45,7 @@ struct Player {
     can_jump: bool,
     started_jump_press_duration: f32,
     finished_jump_press: bool,
+    is_attached_to_wall: bool,
 }
 
 impl Player {
@@ -61,6 +62,7 @@ impl Default for Player {
             can_jump: false,
             started_jump_press_duration: 0.0,
             finished_jump_press: false,
+            is_attached_to_wall: false,
         }
     }
 }
@@ -73,6 +75,7 @@ fn handle_player_collision(player: &mut Player, contact_normal: Vec2) {
     if dot.abs() < 0.1 {
         // wall
         println!("wall collision");
+        player.is_attached_to_wall = true;
     } else if dot.abs() > 0.9 {
         // ground
         println!("ground collision");
@@ -128,6 +131,14 @@ fn move_player(
                 if linear.y < MAX_HORIZONTAL_CONTROL {
                     direction.y = JUMP_BOOST;
                 }
+            } else if player.is_attached_to_wall {
+                player.is_attached_to_wall = false;
+                player.started_jump_press_duration = delta_secs;
+                player.finished_jump_press = false;
+                if linear.y < MAX_HORIZONTAL_CONTROL {
+                    direction.y = JUMP_BOOST;
+                }
+                direction.x -= JUMP_BOOST;
             }
         } else if player.started_jump_press_duration > 0.0 {
             player.finished_jump_press = true;
