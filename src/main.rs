@@ -32,7 +32,7 @@ fn main() {
         .add_plugins(PhysicsDebugPlugin::default())
         .insert_resource(Gravity(Vec2::NEG_Y * GRAVITY))
         .insert_resource(ClearColor(Color::srgb(0.3, 0.3, 0.3)))
-        .add_systems(Startup, (setup, spawn_floor, spawn_player))
+        .add_systems(Startup, (setup, spawn_floor, spawn_wall, spawn_player))
         .add_systems(Update, move_camera)
         .add_systems(Update, handle_collision)
         .add_systems(FixedPreUpdate, move_player)
@@ -68,33 +68,37 @@ impl Default for Player {
 #[derive(Resource)]
 struct CollisionSound(Handle<AudioSource>);
 
-fn handle_player_collision(player: &mut Player, contact_manifold: &ContactManifold) {}
-
 fn handle_collision(
     mut commands: Commands,
-    mut collisions: EventReader<Collision>,
-    mut collisions_started: EventReader<CollisionStarted>,
-    mut query: Query<&mut Player>,
+    collisions: Res<Collisions>,
+    mut single: Single<(Entity, &mut Player)>,
     sound: Res<CollisionSound>,
 ) {
-    if !collisions.is_empty() && !collisions_started.is_empty() {
-        return;
+    let (player_entt, mut player) = single.into_inner();
+    for coll in collisions.collisions_with_entity(player_entt) {
+        // ignore non-initial collisions
+        if let Some(contact_data) = coll.find_deepest_contact() {
+            // ignore speculative collisions
+            if contact_data.penetration < 0.0 {
+                continue;
+            }
+            let player_contact_normal = if coll.entity1 == player_entt {
+                contact_data.normal1
+            } else {
+                contact_data.normal2
+            };
+            let dot = player_contact_normal.dot(Vec2::NEG_Y);
+            if dot.abs() < 0.1 {
+                // wall
+                println!("wall collision");
+            } else if dot.abs() > 0.9 {
+                // ground
+                println!("ground collision");
+                player.reset_jump();
+                player.can_jump = true;
+            }
+        }
     }
-    // commands.spawn((AudioPlayer(sound.0.clone()), PlaybackSettings::DESPAWN));
-    for Collision(contacts) in collisions.read() {
-        if query.contains(contacts.entity1) {
-            query.single_mut().reset_jump();
-            query.single_mut().can_jump = true;
-        }
-        if query.contains(contacts.entity2) {
-            query.single_mut().reset_jump();
-            query.single_mut().can_jump = true;
-        }
-        if query.contains(contacts.entity1) {
-            let mut player = query.single_mut().into_inner();
-        }
-    }
-    for CollisionStarted(entity1, entity2) in collisions_started.read() {}
 }
 
 fn move_player(
@@ -185,6 +189,21 @@ fn spawn_floor(
         RigidBody::Static,
         Collider::rectangle(1000.0, 100.0),
         Mesh2d(meshes.add(Rectangle::new(1000.0, 100.0))),
+        MeshMaterial2d(materials.add(Color::WHITE)),
+        Transform::from_xyz(0.0, -300.0, 0.0),
+    ));
+}
+
+fn spawn_wall(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    commands.spawn((
+        Name::new("Wall"),
+        RigidBody::Static,
+        Collider::rectangle(100.0, 1000.0),
+        Mesh2d(meshes.add(Rectangle::new(100.0, 1000.0))),
         MeshMaterial2d(materials.add(Color::WHITE)),
         Transform::from_xyz(0.0, -300.0, 0.0),
     ));
